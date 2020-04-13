@@ -79,9 +79,15 @@ func (b *bencodeTorrent) toTorrentFile() (TorrentFile, error) {
     return TorrentFile{}, err
   }
 
+  pieceHashes, err := b.splitPieces()
+
+  if err != nil {
+    return TorrentFile{}, err
+  }
+
   tf.Announce = b.Announce
   tf.InfoHash = infoHash
-  // TODO: PieceHashes
+  tf.PieceHashes = pieceHashes
   tf.PieceLength = b.Info.PieceLength
   tf.Length = b.Info.Length
   tf.Name = b.Info.Name
