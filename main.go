@@ -4,141 +4,176 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"fmt"
-	"os"
-
 	"github.com/jackpal/bencode-go"
+	"net/url"
+	"os"
+	"strconv"
 )
 
 // TorrentFile : Everything we need lol
 type TorrentFile struct {
-  Announce string
-  InfoHash [20]byte
-  PieceHashes [][20]byte
-  PieceLength int
-  Length int
-  Name string
+	Announce    string
+	InfoHash    [20]byte
+	PieceHashes [][20]byte
+	PieceLength int
+	Length      int
+	Name        string
 }
 
 type bencodeInfo struct {
-  Pieces string `bencode:"pieces"`
-  PieceLength int `bencode:"piece length"`
-  Length int `bencode:"length"`
-  Name string `bencode:"name"`
+	Pieces      string `bencode:"pieces"`
+	PieceLength int    `bencode:"piece length"`
+	Length      int    `bencode:"length"`
+	Name        string `bencode:"name"`
 }
 
 type bencodeTorrent struct {
-  Announce string `bencode:"announce"`
-  Info bencodeInfo `bencode:"info"`
+	Announce string      `bencode:"announce"`
+	Info     bencodeInfo `bencode:"info"`
 }
 
 func (info *bencodeInfo) hash() ([20]byte, error) {
-  buf := bytes.Buffer{}
+	buf := bytes.Buffer{}
 
-  err := bencode.Marshal(&buf, *info)
+	err := bencode.Marshal(&buf, *info)
 
-  if err != nil {
-    return [20]byte{}, err
-  }
+	if err != nil {
+		return [20]byte{}, err
+	}
 
-  return sha1.Sum(buf.Bytes()), nil
+	return sha1.Sum(buf.Bytes()), nil
 }
 
 func (info *bencodeInfo) splitPieces() ([][20]byte, error) {
-  // split pieces into 20 byte sections
-  hashLen := 20
+	// split pieces into 20 byte sections
+	hashLen := 20
 
-  // Cast Pieces into a buf 
-  piecesBuf := []byte(info.Pieces) 
+	// Cast Pieces into a buf
+	piecesBuf := []byte(info.Pieces)
 
-  // If pieces isn't divisible by the sha1 hash length, we have a problem
-  if len(piecesBuf) % hashLen != 0 {
-    err := fmt.Errorf("Pieces of length %v isn't divisible by %v", len(piecesBuf), hashLen)
+	// If pieces isn't divisible by the sha1 hash length, we have a problem
+	if len(piecesBuf)%hashLen != 0 {
+		err := fmt.Errorf("Pieces of length %v isn't divisible by %v", len(piecesBuf), hashLen)
 
-    return nil, err
-  }
+		return nil, err
+	}
 
-  numHashes := len(piecesBuf) / hashLen
-  hashes := make([][20]byte, numHashes)
+	numHashes := len(piecesBuf) / hashLen
+	hashes := make([][20]byte, numHashes)
 
-  for i := 0; i < numHashes; i++ {
-    // The : in the second arg to copy is a [ : ]
-    // For i = 0, would look like [0 : 20]
-    // For i = 0, would look like [20 : 40]
-    copy(hashes[i][:], piecesBuf[i * hashLen : (i + 1) * hashLen])
-  }
+	for i := 0; i < numHashes; i++ {
+		// The : in the second arg to copy is a [ : ]
+		// For i = 0, would look like [0 : 20]
+		// For i = 0, would look like [20 : 40]
+		copy(hashes[i][:], piecesBuf[i*hashLen:(i+1)*hashLen])
+	}
 
-  return hashes, nil
+	return hashes, nil
 }
 
 func (b *bencodeTorrent) toTorrentFile() (TorrentFile, error) {
-  tf := TorrentFile{}
+	tf := TorrentFile{}
 
-  infoHash, err := b.Info.hash()
+	infoHash, err := b.Info.hash()
 
-  if err != nil {
-    return TorrentFile{}, err
-  }
+	if err != nil {
+		return TorrentFile{}, err
+	}
 
-  pieceHashes, err := b.splitPieces()
+	pieceHashes, err := b.Info.splitPieces()
 
-  if err != nil {
-    return TorrentFile{}, err
-  }
+	if err != nil {
+		return TorrentFile{}, err
+	}
 
-  tf.Announce = b.Announce
-  tf.InfoHash = infoHash
-  tf.PieceHashes = pieceHashes
-  tf.PieceLength = b.Info.PieceLength
-  tf.Length = b.Info.Length
-  tf.Name = b.Info.Name
+	tf.Announce = b.Announce
+	tf.InfoHash = infoHash
+	tf.PieceHashes = pieceHashes
+	tf.PieceLength = b.Info.PieceLength
+	tf.Length = b.Info.Length
+	tf.Name = b.Info.Name
 
-  return tf, nil
+	return tf, nil
+}
+
+func (t *TorrentFile) toTrackerURL(peerID [20]byte, port uint16) (string, error) {
+	announceURL, err := url.Parse(t.Announce)
+
+	if err != nil {
+		return "", err
+	}
+
+	// Build query params
+	params := url.Values{
+		// NOTE: What if I just don't include the slice portion?
+		"info_hash":  []string{string(t.InfoHash[:])},
+		"peer_id":    []string{string(peerID[:])},
+		"port":       []string{strconv.Itoa(int(port))},
+		"uploaded":   []string{"0"},
+		"downloaded": []string{"0"},
+		"compact":    []string{"1"},
+		"left":       []string{strconv.Itoa(t.Length)},
+	}
+
+	// Append query params to announce base url and return
+	// the stringified version.
+	announceURL.RawQuery = params.Encode()
+	return announceURL.String(), nil
 }
 
 func main() {
-  // Handle arguments
-  args, err := validateArgs(os.Args[1:])
+	// Handle arguments
+	args, err := validateArgs(os.Args[1:])
 
-  if err != nil {
-    fmt.Println(err)
-    fmt.Println("Usage:", os.Args[0], "<filename>")
-    os.Exit(1)
-  }
+	if err != nil {
+		fmt.Println(err)
+		fmt.Println("Usage:", os.Args[0], "<filename>")
+		os.Exit(1)
+	}
 
-  fmt.Println(args.filename)
+	fmt.Println(args.filename)
 
-  r, err := os.Open(args.filename)
+	r, err := os.Open(args.filename)
 
-  if err != nil {
-    fmt.Println(err)
-    os.Exit(1)
-  }
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
-  torrentInfo := bencodeTorrent{}
-  bencode.Unmarshal(r, &torrentInfo)
-  fmt.Println(torrentInfo.Announce)
-  outfile := torrentInfo.Info.Name
-  fmt.Println("Creating file at", outfile)
-  _, createErr := os.Create(outfile)
+	torrentInfo := bencodeTorrent{}
+	bencode.Unmarshal(r, &torrentInfo)
+	fmt.Println(torrentInfo.Announce)
+	outfile := torrentInfo.Info.Name
+	fmt.Println("Creating file at", outfile)
+	_, createErr := os.Create(outfile)
 
-  if createErr != nil {
-    fmt.Println(err)
-    os.Exit(1)
-  }
+	if createErr != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	tf, err := torrentInfo.toTorrentFile()
+
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	fmt.Println(tf.toTrackerURL(tf.PieceHashes[0], 6881))
 }
 
 type arguments struct {
-  filename string
+	filename string
 }
 
 const numArgs = 1
 
 func validateArgs(args []string) (arguments, error) {
-  if len(args) != numArgs {
-    return arguments{}, fmt.Errorf("Error: Expected %v arguments, but got %v", numArgs, len(args))
-  }
+	if len(args) != numArgs {
+		return arguments{}, fmt.Errorf("Error: Expected %v arguments, but got %v", numArgs, len(args))
+	}
 
-  return arguments{
-    args[0],
-  }, nil
+	return arguments{
+		args[0],
+	}, nil
 }
